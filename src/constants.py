@@ -32,9 +32,11 @@ FEE_TIER_MEDIUM = 3000   # 0.3%
 FEE_TIER_HIGH = 10000    # 1%
 DEFAULT_FEE_TIER = FEE_TIER_MEDIUM
 
-# Uniswap V3 tick range (full range)
-TICK_LOWER = -887220
-TICK_UPPER = 887220
+# Uniswap V3 tick range. The X1 router accepts ±887270 (default V3 fork
+# slightly outside the canonical ±887220). Using the value the upstream
+# router expects avoids the rare "tick out of range" revert.
+TICK_LOWER = -887270
+TICK_UPPER = 887270
 
 # Decimals
 DEFAULT_TOKEN_DECIMALS = 18
@@ -72,6 +74,11 @@ EVM_VERSION = "paris"
 # Loop defaults
 DEFAULT_LOOP_INTERVAL = 3600
 DEFAULT_ACCOUNT_DELAY = 10
+
+# Per-quest delay so chain state (balance, allowance) settles between txs.
+# Random jitter avoids predictable timing patterns.
+DEFAULT_QUEST_DELAY = 5.0
+DEFAULT_QUEST_JITTER = 3.0
 
 # Random token generation (for deploy)
 TOKEN_NAME_PREFIXES = ["Eco", "Crypto", "Mega", "Hyper", "Quantum", "Solar", "Cosmic"]

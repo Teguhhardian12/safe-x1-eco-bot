@@ -30,7 +30,7 @@ from eth_account.messages import encode_defunct
 from web3 import Web3
 
 from . import constants as C
-from .chain import ChainContext, ChainError
+from .chain import ChainContext, ChainError, calc_amount_out_min, calc_paired_amount
 from .client import APIError, X1Client
 from .config import Config, ConfigError, load_config
 from .deploy import generate_creation_code, generate_token_params
@@ -43,6 +43,25 @@ from .keystore import (
 )
 from .printer import Printer
 from .utils import delay, mask_address
+
+
+# Order quests run in. Faucet first so the wallet has X1T before any
+# on-chain action; deploy (tc) is intentionally skipped because it costs
+# 100 X1T and the testnet faucet only drips a small amount per 24h.
+_QUEST_PRIORITY = {
+    "faucet": 0,
+    "swap": 1,
+    "transfer": 2,
+    "liquidity": 3,
+}
+
+# Quest types we explicitly opt out of even if their handler exists.
+_QUEST_DISABLED = {"tc"}
+
+
+def _quest_sort_key(quest: dict[str, Any]) -> int:
+    qtype = str(quest.get("type") or "").lower()
+    return _QUEST_PRIORITY.get(qtype, 99)
 
 
 REF_CODE = ""  # set to your own X1 referral code if you want to attribute signups
@@ -82,7 +101,10 @@ async def run_account(
                 await _show_stats(client, printer)
                 quests = await client.quests_list()
                 printer.info(f"{len(quests)} quest(s) returned")
-                for quest in quests:
+                quests.sort(key=_quest_sort_key)
+                for i, quest in enumerate(quests):
+                    if i > 0:
+                        await delay(C.DEFAULT_QUEST_DELAY, jitter=C.DEFAULT_QUEST_JITTER)
                     await _run_quest(quest, chain, client, cfg, dry_run=dry_run, printer=printer)
     except KeystoreError as e:
         printer.error(f"keystore error for {keystore_path.name}: {e}")
@@ -118,6 +140,9 @@ def _quest_skip_reason(quest: dict[str, Any]) -> Optional[str]:
     """Return a reason string if this quest should be skipped, else None."""
     qtype = str(quest.get("type") or "").lower()
     periodicity = quest.get("periodicity")
+
+    if qtype in _QUEST_DISABLED:
+        return f"disabled handler: {qtype}"
 
     # Cross-chain partner quests — bot doesn't perform them on-chain.
     if qtype in {"nomis", "symbiosis", "7ion"}:
@@ -190,14 +215,19 @@ async def _h_faucet(_q, _chain, client, _cfg, printer):
 
 
 async def _h_transfer(_q, chain, _client, cfg, printer):
-    recipient = _random_recipient()
-    amount_wei = int(Decimal(str(cfg.transfer_amount)) * (10 ** 18))
     bal = chain.native_balance()
-    if bal < amount_wei + (10 ** 17):  # leave 0.1 X1T for gas
-        printer.warn(f"insufficient native balance: {bal/1e18:.4f}, need >= {amount_wei/1e18 + 0.1:.4f}")
+    amount_wei = bal * int(cfg.transfer_pct * 100) // 10_000
+    gas_buffer = 10 ** 17  # 0.1 X1T
+    if amount_wei <= 0 or bal < amount_wei + gas_buffer:
+        printer.warn(
+            f"insufficient native: {bal/1e18:.4f}, need {amount_wei/1e18:.4f} + 0.1 buffer"
+        )
         return False
+    recipient = _random_recipient()
     tx_hash = chain.transfer_native(to=recipient, amount_wei=amount_wei)
-    printer.success(f"transfer {cfg.transfer_amount} X1T -> {mask_address(recipient)} | {tx_hash}")
+    printer.success(
+        f"transfer {amount_wei/1e18:.6f} X1T ({cfg.transfer_pct}%) -> {mask_address(recipient)} | {tx_hash}"
+    )
     return True
 
 
@@ -206,17 +236,23 @@ async def _h_swap(_q, chain, client, cfg, printer):
     if not pools:
         printer.warn("no pool data — cannot compute amount_out_min for swap")
         return False
-    pool = pools[0]
+    bal = chain.native_balance()
+    amount_in = bal * int(cfg.swap_pct * 100) // 10_000
+    gas_buffer = 10 ** 16  # 0.01 X1T
+    if amount_in <= 0 or bal < amount_in + gas_buffer:
+        printer.warn(
+            f"insufficient native: {bal/1e18:.4f}, need {amount_in/1e18:.4f} + 0.01 buffer"
+        )
+        return False
+
+    amount_out_min = calc_amount_out_min(pools, "WX1T", amount_in, slippage_bps=cfg.slippage_bps)
+    if amount_out_min <= 0:
+        printer.warn(f"amount_out_min computed as {amount_out_min} — pool may be empty")
+        return False
+    pool = max(pools, key=lambda p: int(p.get("liquidity") or 0))
     fee_tier = int(pool.get("feeTier") or C.DEFAULT_FEE_TIER)
-    amount_in = int(Decimal(str(cfg.swap_amount)) * (10 ** 18))
 
-    # Conservative minOut from sqrtPrice — chain.swap_exact_in refuses 0.
-    # For now: compute a coarse minOut at slippage tolerance and let the
-    # router enforce it. Future improvement: compute precisely from sqrtPrice.
-    slip_factor = (C.BPS_DENOMINATOR - cfg.slippage_bps)
-    amount_out_min = max(1, amount_in * slip_factor // C.BPS_DENOMINATOR)
-
-    tx_hash = chain.swap_exact_in(
+    tx_hash = chain.swap_exact_in_native(
         router=C.SWAP_ROUTER_ADDRESS,
         token_in=C.WXC_ADDRESS,
         token_out=C.USDT_ADDRESS,
@@ -224,7 +260,9 @@ async def _h_swap(_q, chain, client, cfg, printer):
         amount_in=amount_in,
         amount_out_min=amount_out_min,
     )
-    printer.success(f"swap {cfg.swap_amount} WX1T -> USDT | {tx_hash}")
+    printer.success(
+        f"swap {amount_in/1e18:.6f} X1T ({cfg.swap_pct}%) -> >= {amount_out_min/1e18:.6f} USDT | {tx_hash}"
+    )
     return True
 
 
@@ -233,27 +271,53 @@ async def _h_liquidity(_q, chain, client, cfg, printer):
     if not pools:
         printer.warn("no pool data — cannot add liquidity")
         return False
-    pool = pools[0]
-    token0 = (pool.get("token0") or {}).get("id") or C.WXC_ADDRESS
-    token1 = (pool.get("token1") or {}).get("id") or C.USDT_ADDRESS
+    pool = max(pools, key=lambda p: int(p.get("liquidity") or 0))
     fee_tier = int(pool.get("feeTier") or C.DEFAULT_FEE_TIER)
-    amount = int(Decimal(str(cfg.add_liquidity_amount)) * (10 ** 18))
 
-    tx_hash = chain.add_liquidity_v3(
+    bal = chain.native_balance()
+    amount1_native = bal * int(cfg.add_liquidity_pct * 100) // 10_000
+    if amount1_native <= 0 or bal < amount1_native + (10 ** 16):
+        printer.warn(
+            f"insufficient native: {bal/1e18:.4f}, need {amount1_native/1e18:.4f} + 0.01 buffer"
+        )
+        return False
+
+    amount0_usdt = calc_paired_amount(pools, "WX1T", amount1_native)
+    if amount0_usdt <= 0:
+        printer.warn(f"computed USDT amount is {amount0_usdt} — pool may be empty")
+        return False
+
+    usdt_bal = chain.balance_of(C.USDT_ADDRESS)
+    if usdt_bal < amount0_usdt:
+        usable_usdt = usdt_bal * 99 // 100
+        if usable_usdt <= 0:
+            printer.warn(f"insufficient USDT: have {usdt_bal/1e18:.6f} — run swap quest first")
+            return False
+        scale = Decimal(usable_usdt) / Decimal(amount0_usdt)
+        amount1_native = int(Decimal(amount1_native) * scale)
+        amount0_usdt = usable_usdt
+        printer.info(
+            f"scaled add-liq down (USDT capped): {amount0_usdt/1e18:.6f} USDT + {amount1_native/1e18:.6f} X1T"
+        )
+
+    tx_hash = chain.add_liquidity_v3_native(
         manager=C.MINT_ROUTER_ADDRESS,
-        pool=Web3.to_checksum_address(pool["id"]),
-        token0=Web3.to_checksum_address(token0),
-        token1=Web3.to_checksum_address(token1),
+        token0=C.USDT_ADDRESS,
+        token1=C.WXC_ADDRESS,
         fee=fee_tier,
-        amount0=amount,
-        amount1=amount,
+        amount0=amount0_usdt,
+        amount1_native=amount1_native,
         slippage_bps=cfg.slippage_bps,
     )
-    printer.success(f"add-liq {cfg.add_liquidity_amount} on pool {mask_address(pool['id'])} | {tx_hash}")
+    printer.success(
+        f"add-liq {amount0_usdt/1e18:.6f} USDT + {amount1_native/1e18:.6f} X1T ({cfg.add_liquidity_pct}%) | {tx_hash}"
+    )
     return True
 
 
 async def _h_deploy(_q, chain, client, _cfg, printer):
+    # Disabled by _QUEST_DISABLED, but the handler stays here so a user can
+    # opt back in by removing "tc" from that set after funding the wallet.
     params = generate_token_params()
     oz_dir = Path("contracts/oz")
     if not oz_dir.exists():
@@ -261,6 +325,11 @@ async def _h_deploy(_q, chain, client, _cfg, printer):
         return False
     creation_code, _abi = generate_creation_code(params, oz_dir, printer=printer)
     deploy_value = Web3.to_wei(100, "ether")  # X1's bot.py uses 100 X1T
+
+    bal = chain.native_balance()
+    if bal < deploy_value + (10 ** 17):
+        printer.warn(f"deploy needs {deploy_value/1e18} X1T + gas, have {bal/1e18}")
+        return False
 
     tx_hash, token_address = chain.deploy_token(
         deploy_router=C.DEPLOY_ROUTER_ADDRESS,
@@ -271,7 +340,6 @@ async def _h_deploy(_q, chain, client, _cfg, printer):
     printer.success(
         f"deployed {params.symbol} ({params.name}) at {token_address} | {tx_hash}"
     )
-    # save_contracts requires constructor-flow auth; left as future work.
     return True
 
 

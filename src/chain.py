@@ -36,6 +36,84 @@ class ChainError(Exception):
     pass
 
 
+def calc_paired_amount(
+    pools: list[dict],
+    have_token_symbol: str,
+    have_amount_wei: int,
+) -> int:
+    """Compute the IDEAL paired token amount for add-liquidity.
+
+    Unlike `calc_amount_out_min`, this does NOT subtract fee tier or slippage —
+    in `mint()`, the pool just consumes tokens at the spot ratio (no swap fee).
+    Subtracting fee/slippage here would underpay the paired side and trigger
+    `amount1Min` revert if the on-chain price hasn't moved.
+    """
+    from decimal import Decimal, ROUND_DOWN
+
+    if not pools:
+        raise ChainError("no pools to compute paired amount from")
+    pool = max(pools, key=lambda p: int(p.get("liquidity") or 0))
+
+    sym0 = (pool.get("token0") or {}).get("symbol")
+    sym1 = (pool.get("token1") or {}).get("symbol")
+    sqrt_price = Decimal(pool["sqrtPrice"])
+
+    price = (sqrt_price ** 2) / (Decimal(2) ** 192)
+    have = Decimal(have_amount_wei)
+
+    if have_token_symbol == sym0:
+        paired = have * price
+    elif have_token_symbol == sym1:
+        paired = have / price
+    else:
+        raise ChainError(f"have_token {have_token_symbol!r} not in pool ({sym0}/{sym1})")
+
+    return int(paired.to_integral_value(rounding=ROUND_DOWN))
+
+
+def calc_amount_out_min(
+    pools: list[dict],
+    token_in_symbol: str,
+    amount_in_wei: int,
+    slippage_bps: int = C.DEFAULT_SLIPPAGE_BPS,
+) -> int:
+    """Compute minOut from pool sqrtPrice, fee tier, and slippage.
+
+    Mirrors vonssy/X1-Ecochain-BOT bot.py L907-940. Picks the deepest pool
+    by liquidity. Direction is inferred by matching token_in_symbol against
+    pool.token0/token1.symbol — caller is responsible for using the same
+    symbols the subgraph returns ("WX1T" / "USDT").
+    """
+    from decimal import Decimal, ROUND_DOWN
+
+    if not pools:
+        raise ChainError("no pools to compute amount_out_min from")
+    pool = max(pools, key=lambda p: int(p.get("liquidity") or 0))
+
+    sym0 = (pool.get("token0") or {}).get("symbol")
+    sym1 = (pool.get("token1") or {}).get("symbol")
+    sqrt_price = Decimal(pool["sqrtPrice"])
+    fee_tier = Decimal(pool.get("feeTier") or C.DEFAULT_FEE_TIER)
+
+    price = (sqrt_price ** 2) / (Decimal(2) ** 192)
+    amount_in = Decimal(amount_in_wei)
+
+    if token_in_symbol == sym0:
+        amount_out = amount_in * price
+    elif token_in_symbol == sym1:
+        amount_out = amount_in / price
+    else:
+        raise ChainError(f"token_in {token_in_symbol!r} not in pool ({sym0}/{sym1})")
+
+    fee_multiplier = Decimal(1) - (fee_tier / Decimal(1_000_000))
+    amount_out *= fee_multiplier
+
+    slippage_multiplier = Decimal(1) - (Decimal(slippage_bps) / Decimal(C.BPS_DENOMINATOR))
+    amount_out *= slippage_multiplier
+
+    return int(amount_out.to_integral_value(rounding=ROUND_DOWN))
+
+
 @dataclass(frozen=True)
 class GasPolicy:
     priority_fee_wei: int
@@ -175,6 +253,43 @@ class ChainContext:
         receipt = self._send_and_wait(tx)
         return receipt["transactionHash"].hex()
 
+    def swap_exact_in_native(
+        self,
+        router: str,
+        token_in: str,
+        token_out: str,
+        fee: int,
+        amount_in: int,
+        amount_out_min: int,
+        deadline_seconds: int = 600,
+    ) -> str:
+        """Swap native X1T -> ERC20 via the router.
+
+        X1's swap router auto-wraps native to WX1T when ``token_in`` is
+        WX1T and ``msg.value == amount_in``. No approve needed because the
+        wrapping happens inside the router from the supplied native value.
+        """
+        if amount_out_min <= 0:
+            raise ChainError("amount_out_min must be > 0 — refuse 0-slippage swap")
+
+        contract = self.w3.eth.contract(address=Web3.to_checksum_address(router), abi=SWAP_ROUTER_ABI)
+        params = (
+            Web3.to_checksum_address(token_in),
+            Web3.to_checksum_address(token_out),
+            fee,
+            self.address,
+            int(time()) + deadline_seconds,
+            amount_in,
+            amount_out_min,
+            0,
+        )
+        data = contract.encode_abi("exactInputSingle", args=[params])
+        tx = self._build_eip1559(
+            gas_limit=C.GAS_LIMIT_SWAP, to=router, value=amount_in, data=data
+        )
+        receipt = self._send_and_wait(tx)
+        return receipt["transactionHash"].hex()
+
     def swap_exact_in(
         self,
         router: str,
@@ -185,7 +300,7 @@ class ChainContext:
         amount_out_min: int,
         deadline_seconds: int = 600,
     ) -> str:
-        """Approve EXACT amount_in, swap, then revoke approval."""
+        """ERC20-in swap: approve EXACT amount_in, swap, then revoke approval."""
         if amount_out_min <= 0:
             raise ChainError("amount_out_min must be > 0 — refuse 0-slippage swap")
 
@@ -211,6 +326,62 @@ class ChainContext:
             self.printer.warn(f"approve revoke failed (allowance left exposed): {e}")
         return receipt["transactionHash"].hex()
 
+    def add_liquidity_v3_native(
+        self,
+        manager: str,
+        token0: str,
+        token1: str,
+        fee: int,
+        amount0: int,
+        amount1_native: int,
+        slippage_bps: int,
+        tick_lower: int = C.TICK_LOWER,
+        tick_upper: int = C.TICK_UPPER,
+        deadline_seconds: int = 600,
+    ) -> str:
+        """Add liquidity where token1 is auto-wrapped from native value.
+
+        token0 is an ERC20 (e.g. USDT) — we approve EXACT amount0 then revoke.
+        token1 (e.g. WX1T) is supplied via ``msg.value = amount1_native``;
+        the manager wraps it. amount0Min/amount1Min computed from
+        ``slippage_bps`` (NEVER 0).
+        """
+        if slippage_bps <= 0 or slippage_bps > C.BPS_DENOMINATOR:
+            raise ChainError(f"slippage_bps out of range: {slippage_bps}")
+
+        self._ensure_allowance(token0, manager, amount0, kind="add-liq token0")
+
+        amount0_min = amount0 * (C.BPS_DENOMINATOR - slippage_bps) // C.BPS_DENOMINATOR
+        amount1_min = amount1_native * (C.BPS_DENOMINATOR - slippage_bps) // C.BPS_DENOMINATOR
+        if amount0_min == 0 or amount1_min == 0:
+            raise ChainError("min amounts collapsed to 0 — increase amounts or reduce slippage")
+
+        contract = self.w3.eth.contract(address=Web3.to_checksum_address(manager), abi=MINT_ROUTER_ABI)
+        params = (
+            Web3.to_checksum_address(token0),
+            Web3.to_checksum_address(token1),
+            fee,
+            tick_lower,
+            tick_upper,
+            amount0,
+            amount1_native,
+            amount0_min,
+            amount1_min,
+            self.address,
+            int(time()) + deadline_seconds,
+        )
+        data = contract.encode_abi("mint", args=[params])
+        tx = self._build_eip1559(
+            gas_limit=C.GAS_LIMIT_MINT, to=manager, value=amount1_native, data=data
+        )
+        receipt = self._send_and_wait(tx)
+
+        try:
+            self._revoke(token0, manager)
+        except ChainError as e:
+            self.printer.warn(f"revoke failed for {token0}: {e}")
+        return receipt["transactionHash"].hex()
+
     def add_liquidity_v3(
         self,
         manager: str,
@@ -223,17 +394,13 @@ class ChainContext:
         slippage_bps: int,
         deadline_seconds: int = 600,
     ) -> str:
-        """Approve EXACT (token0 + token1) amounts, mint position, revoke.
-
-        amount0Min/amount1Min computed from slippage_bps (NEVER 0).
-        """
+        """ERC20-only add liquidity: approve EXACT (token0, token1), mint, revoke both."""
         if slippage_bps <= 0 or slippage_bps > C.BPS_DENOMINATOR:
             raise ChainError(f"slippage_bps out of range: {slippage_bps}")
 
         self._ensure_allowance(token0, manager, amount0, kind="add-liq token0")
         self._ensure_allowance(token1, manager, amount1, kind="add-liq token1")
 
-        # min = desired * (1 - slippage)
         amount0_min = amount0 * (C.BPS_DENOMINATOR - slippage_bps) // C.BPS_DENOMINATOR
         amount1_min = amount1 * (C.BPS_DENOMINATOR - slippage_bps) // C.BPS_DENOMINATOR
         assert amount0_min > 0 and amount1_min > 0, "min amounts collapsed to 0 — increase amounts or reduce slippage"
@@ -256,7 +423,6 @@ class ChainContext:
         tx = self._build_eip1559(gas_limit=C.GAS_LIMIT_MINT, to=manager, data=data)
         receipt = self._send_and_wait(tx)
 
-        # Revoke both approvals regardless of mint outcome (reached only on success here)
         for tok in (token0, token1):
             try:
                 self._revoke(tok, manager)

@@ -27,9 +27,9 @@ class Config:
     priority_fee_gwei: float
     proxy_url: Optional[str]
     keystore_dir: Path
-    transfer_amount: float
-    swap_amount: float
-    add_liquidity_amount: float
+    transfer_pct: float
+    swap_pct: float
+    add_liquidity_pct: float
 
 
 def _required(key: str, value: Optional[str]) -> str:
@@ -95,13 +95,13 @@ def load_config(env_file: Optional[Path] = None) -> Config:
     proxy_url = _validate_proxy(os.getenv("PROXY_URL") or None)
     keystore_dir = Path(os.getenv("KEYSTORE_DIR", C.KEYSTORE_DIR_DEFAULT))
 
-    transfer_amount = _as_float("TRANSFER_AMOUNT", os.getenv("TRANSFER_AMOUNT", "0.001"))
-    swap_amount = _as_float("SWAP_AMOUNT", os.getenv("SWAP_AMOUNT", "0.001"))
-    add_liquidity_amount = _as_float("ADD_LIQUIDITY_AMOUNT", os.getenv("ADD_LIQUIDITY_AMOUNT", "0.001"))
+    transfer_pct = _as_float("TRANSFER_PCT", os.getenv("TRANSFER_PCT", "2"))
+    swap_pct = _as_float("SWAP_PCT", os.getenv("SWAP_PCT", "15"))
+    add_liquidity_pct = _as_float("ADD_LIQUIDITY_PCT", os.getenv("ADD_LIQUIDITY_PCT", "15"))
 
-    for name, val in (("TRANSFER_AMOUNT", transfer_amount), ("SWAP_AMOUNT", swap_amount), ("ADD_LIQUIDITY_AMOUNT", add_liquidity_amount)):
-        if val <= 0:
-            raise ConfigError(f"{name} must be > 0, got {val}")
+    for name, val in (("TRANSFER_PCT", transfer_pct), ("SWAP_PCT", swap_pct), ("ADD_LIQUIDITY_PCT", add_liquidity_pct)):
+        if not (0 < val < 100):
+            raise ConfigError(f"{name} must be in (0, 100), got {val}")
 
     return Config(
         rpc_url=rpc_url,
@@ -114,7 +114,7 @@ def load_config(env_file: Optional[Path] = None) -> Config:
         priority_fee_gwei=priority_fee_gwei,
         proxy_url=proxy_url,
         keystore_dir=keystore_dir,
-        transfer_amount=transfer_amount,
-        swap_amount=swap_amount,
-        add_liquidity_amount=add_liquidity_amount,
+        transfer_pct=transfer_pct,
+        swap_pct=swap_pct,
+        add_liquidity_pct=add_liquidity_pct,
     )
