@@ -4,25 +4,6 @@ Safe rebuild of [vonssy/X1-Ecochain-BOT](https://github.com/vonssy/X1-Ecochain-B
 
 **Status:** Implementation complete (Phase 1-7). Real testnet smoke test pending — see Verification below.
 
-## Why a rebuild
-
-The original bot stores private keys in plaintext (`accounts.txt`), uses unlimited token approvals (`2^256 - 1`), sets slippage minimums to 0, fetches Solidity imports from a CDN at compile time, ships as one 2195-line file, and uses `maxFeePerGas = baseFee + 1` (which fails the moment the base fee ticks up). That's a stack of footguns that turns "run on testnet" into "lose mainnet keys" the day someone aims a typo at the wrong file.
-
-This repo keeps the same surface — auth, faucet, transfer, swap, add liquidity, deploy token, quests — but with the upgrades below.
-
-## Safety upgrades vs original
-
-| Aspect | Original | This repo |
-|---|---|---|
-| Private key storage | Plaintext `accounts.txt` | Encrypted keystore JSON (web3 format), `0600` perms |
-| Approval amount | `2^256 - 1` (unlimited) | Exact amount + revoke to 0 after |
-| Add-liquidity slippage | `amount0Min = amount1Min = 0` | Computed from `slippage_bps` (default 2%) |
-| Gas `maxFeePerGas` | `baseFee + 1` | `2 * baseFee + priorityFee` |
-| Solidity imports | jsDelivr CDN at compile time | Vendored OZ v5.0.0, path-traversal blocked |
-| Code structure | 1 file, 2195 lines | 10 modules under `src/` |
-| Config validation | None | Strict — bad URL/slippage/amount aborts |
-| Nonce handling | Fetch once, crash on error | Refetch + retry once on `nonce too low` |
-
 ## Project layout
 
 ```

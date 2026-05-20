@@ -1,12 +1,14 @@
-"""Async HTTP client for the X1 API + subgraph.
+"""Async HTTP client for the X1 testnet API + DEX subgraph.
 
-Endpoint paths and payload shapes mirror the original X1-Ecochain-BOT.
-If the upstream API changes, only this file needs updating — chain.py and
-main.py talk to the bot through this client's high-level methods.
+Endpoint paths and payload shapes are matched to the actual X1 testnet
+backend as observed in vonssy/X1-Ecochain-BOT bot.py. The X1 API uses a
+non-standard scheme on two points:
 
-Proxy support:
-- HTTP/HTTPS proxies use aiohttp's `proxy=` kwarg
-- SOCKS proxies use ProxyConnector (aiohttp-socks)
+  1. Authorization header is the raw token, not "Bearer <token>"
+  2. complete_quest is POST /quests with quest_id as a *query string*
+     parameter, not a JSON body
+
+If the upstream API changes, only this file needs updating.
 """
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ from typing import Any, Optional
 
 import aiohttp
 
+from . import constants as C
 from .printer import Printer
 from .utils import retry
 
@@ -27,17 +30,34 @@ def _is_socks(url: str) -> bool:
     return url.startswith(("socks5://", "socks4://"))
 
 
+# Headers the X1 web app sends. We mirror them so the API doesn't reject us
+# for looking like a non-browser client.
+_BASE_HEADERS = {
+    "Accept": "*/*",
+    "Origin": "https://testnet.x1ecochain.com",
+    "Referer": "https://testnet.x1ecochain.com/",
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+}
+
+_DEX_HEADERS_OVERRIDE = {
+    "Origin": "https://ecodex.one",
+    "Referer": "https://ecodex.one/",
+}
+
+
 class X1Client:
     def __init__(
         self,
         api_base: str,
         subgraph_url: str,
+        nft_api_base: Optional[str] = None,
         proxy_url: Optional[str] = None,
         printer: Optional[Printer] = None,
-        timeout: float = 30.0,
+        timeout: float = 60.0,
     ) -> None:
         self.api_base = api_base.rstrip("/")
-        self.subgraph_url = subgraph_url
+        self.nft_api_base = (nft_api_base or C.API_NFT).rstrip("/")
+        self.subgraph_base = subgraph_url.rstrip("/")
         self.proxy_url = proxy_url
         self.printer = printer or Printer()
         self.timeout = aiohttp.ClientTimeout(total=timeout)
@@ -65,6 +85,7 @@ class X1Client:
             self._session = None
 
     def set_token(self, token: Optional[str]) -> None:
+        """X1 sends the token raw in the Authorization header (no Bearer prefix)."""
         self._token = token
 
     def _proxy_kwarg(self) -> dict[str, Any]:
@@ -72,15 +93,16 @@ class X1Client:
             return {"proxy": self.proxy_url}
         return {}
 
-    def _headers(self, extra: Optional[dict[str, str]] = None) -> dict[str, str]:
-        headers = {
-            "Accept": "application/json",
-            "User-Agent": "safe-x1-eco-bot/0.1",
-        }
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
-        if extra:
-            headers.update(extra)
+    def _headers(self, *, with_auth: bool = False, json_body: bool = False, dex: bool = False) -> dict[str, str]:
+        headers = dict(_BASE_HEADERS)
+        if dex:
+            headers.update(_DEX_HEADERS_OVERRIDE)
+        if json_body:
+            headers["Content-Type"] = "application/json"
+        if with_auth:
+            if not self._token:
+                raise APIError("auth required but no token set; call auth_signin first")
+            headers["Authorization"] = self._token
         return headers
 
     async def _request(
@@ -88,22 +110,14 @@ class X1Client:
         method: str,
         url: str,
         *,
+        headers: dict[str, str],
         json_body: Optional[dict[str, Any]] = None,
         params: Optional[dict[str, Any]] = None,
-        extra_headers: Optional[dict[str, str]] = None,
     ) -> Any:
         if self._session is None:
             raise RuntimeError("X1Client must be used as an async context manager")
-        headers = self._headers({"Content-Type": "application/json"} if json_body else None)
-        if extra_headers:
-            headers.update(extra_headers)
         async with self._session.request(
-            method,
-            url,
-            json=json_body,
-            params=params,
-            headers=headers,
-            **self._proxy_kwarg(),
+            method, url, json=json_body, params=params, headers=headers, **self._proxy_kwarg()
         ) as resp:
             text = await resp.text()
             if resp.status >= 400:
@@ -119,117 +133,168 @@ class X1Client:
 
     @retry(attempts=3, base_delay=3.0)
     async def auth_message(self, address: str) -> str:
-        """Get the message that needs to be signed for SIWE auth."""
-        data = await self._request("GET", f"{self.api_base}/auth/message", params={"address": address})
+        """GET /signin?address=X -> { message: ... }"""
+        data = await self._request(
+            "GET",
+            f"{self.api_base}/signin",
+            headers=self._headers(json_body=True),
+            params={"address": address},
+        )
         if isinstance(data, dict) and "message" in data:
             return data["message"]
-        raise APIError(f"unexpected auth_message payload: {data!r}")
+        raise APIError(f"unexpected /signin GET payload: {data!r}")
 
     @retry(attempts=3, base_delay=3.0)
-    async def auth_signin(self, address: str, signature: str) -> str:
-        """Submit signature, receive bearer token."""
+    async def auth_signin(self, address: str, signature: str, ref_code: str = "") -> str:
+        """POST /signin {signature, address, ref_code} -> { token: ... }"""
+        body: dict[str, Any] = {"signature": signature, "address": address}
+        if ref_code:
+            body["ref_code"] = ref_code
         data = await self._request(
             "POST",
-            f"{self.api_base}/auth/signin",
-            json_body={"address": address, "signature": signature},
+            f"{self.api_base}/signin",
+            headers=self._headers(json_body=True),
+            json_body=body,
         )
         if isinstance(data, dict) and "token" in data:
             return data["token"]
-        raise APIError(f"unexpected auth_signin payload: {data!r}")
+        raise APIError(f"unexpected /signin POST payload: {data!r}")
 
     @retry(attempts=3, base_delay=3.0)
     async def auth_me(self) -> dict[str, Any]:
-        return await self._request("GET", f"{self.api_base}/auth/me")
-
-    @retry(attempts=3, base_delay=3.0)
-    async def auth_nonce(self) -> str:
-        data = await self._request("GET", f"{self.api_base}/auth/nonce")
-        if isinstance(data, dict) and "nonce" in data:
-            return data["nonce"]
-        raise APIError(f"unexpected auth_nonce payload: {data!r}")
-
-    @retry(attempts=3, base_delay=3.0)
-    async def auth_verify(self, address: str, signature: str, nonce: str) -> bool:
-        data = await self._request(
-            "POST",
-            f"{self.api_base}/auth/verify",
-            json_body={"address": address, "signature": signature, "nonce": nonce},
+        """GET /me -> { points, ref_points, rank, referral_rank, ... }"""
+        return await self._request(
+            "GET", f"{self.api_base}/me", headers=self._headers(with_auth=True, json_body=True)
         )
-        return bool(isinstance(data, dict) and data.get("ok"))
 
     # --- Quests + faucet ---
 
     @retry(attempts=3, base_delay=3.0)
     async def quests_list(self) -> list[dict[str, Any]]:
-        data = await self._request("GET", f"{self.api_base}/quests")
+        """GET /quests -> [ {id, title, type, reward, periodicity, ...}, ... ]"""
+        data = await self._request(
+            "GET", f"{self.api_base}/quests", headers=self._headers(with_auth=True, json_body=True)
+        )
         if isinstance(data, list):
             return data
         if isinstance(data, dict) and isinstance(data.get("quests"), list):
             return data["quests"]
-        raise APIError(f"unexpected quests_list payload: {data!r}")
+        raise APIError(f"unexpected /quests payload: {data!r}")
 
     @retry(attempts=3, base_delay=3.0)
-    async def request_faucet(self, address: str) -> dict[str, Any]:
+    async def request_faucet(self, address: str) -> bool:
+        """GET <nft_api>/testnet/faucet?address=X — succeeds with empty body or 'try again later'."""
+        if self._session is None:
+            raise RuntimeError("X1Client must be used as an async context manager")
+        url = f"{self.nft_api_base}/testnet/faucet"
+        async with self._session.get(
+            url,
+            headers=self._headers(with_auth=True, json_body=True),
+            params={"address": address},
+            **self._proxy_kwarg(),
+        ) as resp:
+            text = await resp.text()
+            if resp.status == 500 and "try again later" in text.lower():
+                self.printer.warn("faucet on cooldown — counted as success")
+                return True
+            if resp.status >= 400:
+                raise APIError(f"faucet -> {resp.status}: {text[:500]}")
+            return True
+
+    @retry(attempts=3, base_delay=3.0)
+    async def complete_quest(self, quest_id: str) -> dict[str, Any]:
+        """POST /quests?quest_id=X (quest_id is a *query string* param)."""
         return await self._request(
-            "POST", f"{self.api_base}/faucet", json_body={"address": address}
+            "POST",
+            f"{self.api_base}/quests",
+            headers=self._headers(with_auth=True, json_body=True),
+            params={"quest_id": quest_id},
         )
 
-    @retry(attempts=3, base_delay=3.0)
-    async def complete_quest(self, quest_id: str, tx_hash: Optional[str] = None) -> dict[str, Any]:
-        body: dict[str, Any] = {"quest_id": quest_id}
-        if tx_hash:
-            body["tx_hash"] = tx_hash
-        return await self._request("POST", f"{self.api_base}/quests/complete", json_body=body)
+    # --- Token Constructor (separate auth) ---
 
-    # --- Deploy support ---
+    @retry(attempts=3, base_delay=3.0)
+    async def auth_nonce(self, address: str) -> str:
+        """GET <constructor>/api/v1/auth/nonce?address=X -> { nonce: ... }"""
+        data = await self._request(
+            "GET",
+            f"{C.API_CONSTRUCTOR}/api/v1/auth/nonce",
+            headers=self._constructor_headers(),
+            params={"address": address},
+        )
+        if isinstance(data, dict) and "nonce" in data:
+            return data["nonce"]
+        raise APIError(f"unexpected nonce payload: {data!r}")
+
+    @retry(attempts=3, base_delay=3.0)
+    async def auth_verify(self, address: str, signature: str, message: str) -> dict[str, Any]:
+        """POST <constructor>/api/v1/auth/verify."""
+        return await self._request(
+            "POST",
+            f"{C.API_CONSTRUCTOR}/api/v1/auth/verify",
+            headers=self._constructor_headers(json_body=True),
+            json_body={"address": address, "signature": signature, "message": message},
+        )
 
     @retry(attempts=3, base_delay=3.0)
     async def save_contracts(
-        self,
-        address: str,
-        token_address: str,
-        name: str,
-        symbol: str,
-        constructor_args: dict[str, Any],
+        self, address: str, token_address: str, name: str, symbol: str
     ) -> dict[str, Any]:
+        """Notify constructor backend of a freshly deployed token (so it shows up in the UI)."""
         return await self._request(
             "POST",
-            f"{self.api_base}/contracts",
-            json_body={
-                "owner": address,
-                "address": token_address,
-                "name": name,
-                "symbol": symbol,
-                "constructor_args": constructor_args,
-            },
+            f"{C.API_CONSTRUCTOR}/api/v1/contracts",
+            headers=self._constructor_headers(json_body=True),
+            json_body={"address": address, "token_address": token_address, "name": name, "symbol": symbol},
         )
 
-    # --- Subgraph ---
+    # --- DEX subgraph ---
 
     @retry(attempts=3, base_delay=3.0)
-    async def pool_by_tokens(self, token0: str, token1: str, fee: int) -> Optional[str]:
-        """Look up Uniswap V3 pool address from the subgraph."""
-        a, b = sorted([token0.lower(), token1.lower()])
+    async def pool_by_tokens(
+        self, token_a: str, token_b: str
+    ) -> Optional[list[dict[str, Any]]]:
+        """Query `ms.kod.af/subgraphs/name/uniswap-v3` for pools containing tokens a and b."""
+        if self._session is None:
+            raise RuntimeError("X1Client must be used as an async context manager")
         query = """
-        query Pool($t0: String!, $t1: String!, $fee: Int!) {
-          pools(where: {token0: $t0, token1: $t1, feeTier: $fee}, first: 1) {
+        query PoolByTokens($a: String!, $b: String!) {
+          pools(
+            where: { token0_in: [$a, $b], token1_in: [$a, $b] }
+            first: 5
+          ) {
             id
+            feeTier
+            sqrtPrice
+            liquidity
+            tick
+            token0 { id symbol name decimals }
+            token1 { id symbol name decimals }
           }
         }
         """
-        if self._session is None:
-            raise RuntimeError("X1Client must be used as an async context manager")
+        url = f"{self.subgraph_base}/subgraphs/name/uniswap-v3"
         async with self._session.post(
-            self.subgraph_url,
-            json={"query": query, "variables": {"t0": a, "t1": b, "fee": fee}},
-            headers={"Content-Type": "application/json"},
+            url,
+            headers=self._headers(json_body=True, dex=True),
+            json={"query": query, "variables": {"a": token_a.lower(), "b": token_b.lower()}, "operationName": "PoolByTokens"},
             **self._proxy_kwarg(),
         ) as resp:
             text = await resp.text()
             if resp.status >= 400:
                 raise APIError(f"subgraph -> {resp.status}: {text[:500]}")
             data = json.loads(text)
-        pools = data.get("data", {}).get("pools") or []
-        if not pools:
-            return None
-        return pools[0]["id"]
+        return (data.get("data") or {}).get("pools")
+
+    # --- Internals ---
+
+    def _constructor_headers(self, *, json_body: bool = False) -> dict[str, str]:
+        headers = {
+            "Accept": "*/*",
+            "Origin": "https://constructor.x1ecochain.com",
+            "Referer": "https://constructor.x1ecochain.com/",
+            "User-Agent": _BASE_HEADERS["User-Agent"],
+        }
+        if json_body:
+            headers["Content-Type"] = "application/json"
+        return headers

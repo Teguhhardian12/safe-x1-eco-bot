@@ -264,11 +264,25 @@ class ChainContext:
                 self.printer.warn(f"revoke failed for {tok}: {e}")
         return receipt["transactionHash"].hex()
 
-    def deploy_token(self, deploy_router: str, creation_code: bytes) -> tuple[str, str]:
-        """Call sendAndDeploy(creationCode), return (tx_hash, deployed_address)."""
+    def deploy_token(
+        self,
+        deploy_router: str,
+        payable_addr: str,
+        value_wei: int,
+        creation_code: bytes,
+    ) -> tuple[str, str]:
+        """Call sendAndDeploy(payable, value, creationCode), return (tx_hash, deployed_address).
+
+        The token address is at receipt.logs[1].address per X1's deploy
+        router behaviour (the first log is the deploy router event, the
+        second is the new ERC20 contract's first emission).
+        """
         contract = self.w3.eth.contract(address=Web3.to_checksum_address(deploy_router), abi=DEPLOY_ROUTER_ABI)
-        data = contract.encode_abi("sendAndDeploy", args=[creation_code])
-        tx = self._build_eip1559(gas_limit=C.GAS_LIMIT_DEPLOY, to=deploy_router, data=data)
+        data = contract.encode_abi(
+            "sendAndDeploy",
+            args=[Web3.to_checksum_address(payable_addr), value_wei, creation_code],
+        )
+        tx = self._build_eip1559(gas_limit=C.GAS_LIMIT_DEPLOY, to=deploy_router, value=value_wei, data=data)
         receipt = self._send_and_wait(tx)
         deployed = self._extract_deployed_address(receipt)
         if not deployed:
@@ -305,17 +319,19 @@ class ChainContext:
         self._approve(token, spender, 0)
 
     def _extract_deployed_address(self, receipt: TxReceipt) -> Optional[str]:
-        # Many sendAndDeploy implementations emit an event with the address
-        # in the first topic or first data slot. Without the exact event
-        # signature, fall back to scanning logs for any address-shaped value.
-        for log in receipt.get("logs", []):
+        # X1's deploy router emits the new token contract's address as the
+        # `address` field on the second log entry (logs[1]). Fall back to
+        # scanning topics, then receipt.contractAddress.
+        logs = receipt.get("logs", [])
+        if len(logs) >= 2 and logs[1].get("address"):
+            return Web3.to_checksum_address(logs[1]["address"])
+        for log in logs:
             for topic in log.get("topics", [])[1:]:
                 hexed: HexStr = topic.hex() if hasattr(topic, "hex") else topic
                 if isinstance(hexed, str) and len(hexed) == 66:
                     candidate = "0x" + hexed[-40:]
                     if int(candidate, 16) != 0:
                         return Web3.to_checksum_address(candidate)
-        # Fallback: receipt.contractAddress on plain CREATE
         if receipt.get("contractAddress"):
             return Web3.to_checksum_address(receipt["contractAddress"])
         return None

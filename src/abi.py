@@ -118,13 +118,18 @@ MINT_ROUTER_ABI = [
     },
 ]
 
-# Custom deploy helper used by X1 (sendAndDeploy)
+# X1's deploy router: sendAndDeploy(payable, value, creationCode)
+# Verified against vonssy/X1-Ecochain-BOT bot.py L1197.
 DEPLOY_ROUTER_ABI = [
     {
         "name": "sendAndDeploy",
         "type": "function",
         "stateMutability": "payable",
-        "inputs": [{"name": "creationCode", "type": "bytes"}],
+        "inputs": [
+            {"name": "payable_", "type": "address"},
+            {"name": "value", "type": "uint256"},
+            {"name": "creationCode", "type": "bytes"},
+        ],
         "outputs": [{"name": "deployed", "type": "address"}],
     },
 ]
