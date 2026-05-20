@@ -1,7 +1,9 @@
 aiohttp>=3.9.0
-aiohttp-socks>=0.8.4
 web3>=6.15.0
 eth-account>=0.10.0
 python-dotenv>=1.0.0
 colorama>=0.4.6
 py-solc-x>=2.0.2
+
+# Optional: install only if you need SOCKS proxy support
+# aiohttp-socks>=0.8.4
