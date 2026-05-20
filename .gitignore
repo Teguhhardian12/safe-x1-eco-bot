@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Secrets & keystores
+.env
+.env.*
+!.env.example
+keystores/
+*.keystore
+accounts.txt
+private_keys.txt
+
+# Solidity build artifacts
+contracts/oz/
+build/
+artifacts/
+cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
