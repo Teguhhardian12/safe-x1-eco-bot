@@ -67,6 +67,26 @@ def _quest_sort_key(quest: dict[str, Any]) -> int:
     return _QUEST_PRIORITY.get(qtype, 99)
 
 
+# Only on-chain daily quests are dispatched. Everything else (social,
+# partner integrations, default click-only quests) is dropped before the
+# delay loop so multi-wallet runs stay fast.
+_DISPATCHABLE_TYPES = frozenset(_QUEST_PRIORITY.keys())
+
+
+def _filter_dispatchable(quests: list[dict[str, Any]], printer: Printer) -> list[dict[str, Any]]:
+    keep: list[dict[str, Any]] = []
+    dropped = 0
+    for q in quests:
+        qtype = str(q.get("type") or "").lower()
+        if qtype in _DISPATCHABLE_TYPES:
+            keep.append(q)
+        else:
+            dropped += 1
+    if dropped:
+        printer.info(f"dropped {dropped} non-onchain quest(s)")
+    return keep
+
+
 REF_CODE = ""  # set to your own X1 referral code if you want to attribute signups
 
 
@@ -104,6 +124,7 @@ async def run_account(
                 await _show_stats(client, printer)
                 quests = await client.quests_list()
                 printer.info(f"{len(quests)} quest(s) returned")
+                quests = _filter_dispatchable(quests, printer)
                 quests.sort(key=_quest_sort_key)
                 for i, quest in enumerate(quests):
                     if i > 0:
