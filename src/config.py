@@ -1,8 +1,9 @@
 """Configuration loader: parses .env, validates fields, returns frozen dataclass."""
 from __future__ import annotations
 
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +27,7 @@ class Config:
     slippage_bps: int
     priority_fee_gwei: float
     proxy_url: Optional[str]
+    proxy_map: dict[str, str]
     keystore_dir: Path
     transfer_pct: float
     swap_pct: float
@@ -67,6 +69,38 @@ def _validate_proxy(value: Optional[str]) -> Optional[str]:
     return value
 
 
+def _load_proxy_map(path: Optional[Path]) -> dict[str, str]:
+    """Load address->proxy_url mapping from a JSON file.
+
+    Format: { "0xAddress": "http://...", "0xOther": "socks5://...", "default": "..." }
+
+    Address keys are normalised to lowercase. The optional "default" key is
+    used when a wallet has no specific entry. Each URL is validated with
+    the same scheme rules as PROXY_URL.
+    """
+    if path is None:
+        return {}
+    if not path.exists():
+        raise ConfigError(f"PROXY_MAP_FILE points to {path}, but it doesn't exist")
+    try:
+        raw = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        raise ConfigError(f"PROXY_MAP_FILE is not valid JSON: {e}") from e
+    if not isinstance(raw, dict):
+        raise ConfigError(f"PROXY_MAP_FILE must be a JSON object, got {type(raw).__name__}")
+
+    out: dict[str, str] = {}
+    for key, val in raw.items():
+        if not isinstance(val, str):
+            raise ConfigError(f"PROXY_MAP_FILE[{key!r}] must be a string, got {type(val).__name__}")
+        validated = _validate_proxy(val)
+        if validated is None:
+            continue  # empty string disables proxy for this wallet
+        normalised = key.lower() if key.startswith("0x") else key
+        out[normalised] = validated
+    return out
+
+
 def load_config(env_file: Optional[Path] = None) -> Config:
     if env_file:
         load_dotenv(env_file)
@@ -93,6 +127,8 @@ def load_config(env_file: Optional[Path] = None) -> Config:
         raise ConfigError(f"GAS_PRIORITY_FEE_GWEI must be non-negative, got {priority_fee_gwei}")
 
     proxy_url = _validate_proxy(os.getenv("PROXY_URL") or None)
+    proxy_map_file = os.getenv("PROXY_MAP_FILE") or None
+    proxy_map = _load_proxy_map(Path(proxy_map_file) if proxy_map_file else None)
     keystore_dir = Path(os.getenv("KEYSTORE_DIR", C.KEYSTORE_DIR_DEFAULT))
 
     transfer_pct = _as_float("TRANSFER_PCT", os.getenv("TRANSFER_PCT", "2"))
@@ -113,6 +149,7 @@ def load_config(env_file: Optional[Path] = None) -> Config:
         slippage_bps=slippage_bps,
         priority_fee_gwei=priority_fee_gwei,
         proxy_url=proxy_url,
+        proxy_map=proxy_map,
         keystore_dir=keystore_dir,
         transfer_pct=transfer_pct,
         swap_pct=swap_pct,

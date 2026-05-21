@@ -87,6 +87,25 @@ def _filter_dispatchable(quests: list[dict[str, Any]], printer: Printer) -> list
     return keep
 
 
+def _resolve_proxy(cfg: Config, address: str, printer: Printer) -> Optional[str]:
+    """Pick the proxy URL for this wallet.
+
+    Order: proxy_map[address] > proxy_map["default"] > cfg.proxy_url > None.
+    Logs which one was picked so a misconfigured map is obvious in -v output.
+    """
+    addr_lower = address.lower()
+    if addr_lower in cfg.proxy_map:
+        printer.debug(f"proxy: per-wallet entry for {mask_address(address)}")
+        return cfg.proxy_map[addr_lower]
+    if "default" in cfg.proxy_map:
+        printer.debug(f"proxy: map default for {mask_address(address)}")
+        return cfg.proxy_map["default"]
+    if cfg.proxy_url:
+        printer.debug(f"proxy: env PROXY_URL for {mask_address(address)}")
+        return cfg.proxy_url
+    return None
+
+
 REF_CODE = ""  # set to your own X1 referral code if you want to attribute signups
 
 
@@ -113,10 +132,11 @@ async def run_account(
                 printer=printer,
             )
 
+            proxy_url = _resolve_proxy(cfg, address, printer)
             async with X1Client(
                 api_base=cfg.api_base,
                 subgraph_url=cfg.subgraph_url,
-                proxy_url=cfg.proxy_url,
+                proxy_url=proxy_url,
                 printer=printer,
             ) as client:
                 token = await _signin(chain, client, address, printer)

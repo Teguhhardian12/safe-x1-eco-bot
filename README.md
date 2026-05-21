@@ -99,6 +99,7 @@ Each wallet uses an isolated `X1Client` instance — auth tokens, constructor se
 | `SWAP_PCT` | % of native balance per swap | `15` |
 | `ADD_LIQUIDITY_PCT` | % of native balance per add-liq | `15` |
 | `PROXY_URL` | optional outbound proxy (see below) | empty |
+| `PROXY_MAP_FILE` | optional per-wallet proxy mapping (see below) | empty |
 
 ### Proxy
 
@@ -114,7 +115,23 @@ PROXY_URL=http://user:pass@host:port
 PROXY_URL=socks5://user:pass@host:port
 ```
 
-The proxy is **global** — every wallet in the run uses the same one. If you need per-wallet proxies (e.g. one wallet per residential IP), run separate processes with `--keystore-dir` pointing to a different folder per group, each with its own `.env`.
+`PROXY_URL` is **global per-process** — every wallet in the run uses it.
+
+#### Per-wallet proxy
+
+For one IP per wallet (residential proxies, anti-detection), set `PROXY_MAP_FILE` in `.env` to a JSON file:
+
+```json
+{
+  "0xa256ca...35ff": "http://user:pass@us-proxy:8080",
+  "0xb789cd...12ee": "socks5://user:pass@sg-proxy:1080",
+  "default":         "http://user:pass@fallback:8080"
+}
+```
+
+Resolution order per wallet: specific address entry → `"default"` key → `PROXY_URL` → no proxy. Address keys are matched case-insensitively. Empty string disables the proxy for that wallet.
+
+One run, one prompt sequence — every wallet still iterates in the same loop, but each one opens its own `X1Client` with its own proxy. Run `--verbose` to see which proxy got picked per wallet (`proxy: per-wallet entry...` / `proxy: map default...`).
 
 ## CLI reference
 
