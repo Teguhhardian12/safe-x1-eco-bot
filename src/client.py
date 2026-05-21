@@ -63,6 +63,7 @@ class X1Client:
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: Optional[aiohttp.ClientSession] = None
         self._token: Optional[str] = None
+        self._constructor_token: Optional[str] = None
 
     async def __aenter__(self) -> "X1Client":
         if self.proxy_url and _is_socks(self.proxy_url):
@@ -227,26 +228,42 @@ class X1Client:
         raise APIError(f"unexpected nonce payload: {data!r}")
 
     @retry(attempts=3, base_delay=3.0)
-    async def auth_verify(self, address: str, signature: str, message: str) -> dict[str, Any]:
-        """POST <constructor>/api/v1/auth/verify."""
+    async def auth_verify(self, signature: str, message: str) -> dict[str, Any]:
+        """POST <constructor>/api/v1/auth/verify -> { token: ... }"""
         return await self._request(
             "POST",
             f"{C.API_CONSTRUCTOR}/api/v1/auth/verify",
             headers=self._constructor_headers(json_body=True),
-            json_body={"address": address, "signature": signature, "message": message},
+            json_body={"message": message, "signature": signature},
         )
 
     @retry(attempts=3, base_delay=3.0)
     async def save_contracts(
-        self, address: str, token_address: str, name: str, symbol: str
+        self, owner: str, token_address: str, name: str
     ) -> dict[str, Any]:
-        """Notify constructor backend of a freshly deployed token (so it shows up in the UI)."""
+        """POST <constructor>/api/v1/contracts with constructor Bearer token.
+
+        Constructor backend tracks deployed tokens — this call is required
+        before complete_quest('tc') will accept the deploy as valid.
+        """
+        if not self._constructor_token:
+            raise APIError("constructor token not set; call auth_verify first")
+        headers = self._constructor_headers(json_body=True)
+        headers["Authorization"] = f"Bearer {self._constructor_token}"
         return await self._request(
             "POST",
             f"{C.API_CONSTRUCTOR}/api/v1/contracts",
-            headers=self._constructor_headers(json_body=True),
-            json_body={"address": address, "token_address": token_address, "name": name, "symbol": symbol},
+            headers=headers,
+            json_body={
+                "address": token_address,
+                "features": "ERC20 Token",
+                "name": name,
+                "owner": owner,
+            },
         )
+
+    def set_constructor_token(self, token: Optional[str]) -> None:
+        self._constructor_token = token
 
     # --- DEX subgraph ---
 

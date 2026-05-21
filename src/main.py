@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import secrets
 import sys
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional
@@ -46,17 +47,19 @@ from .utils import delay, mask_address
 
 
 # Order quests run in. Faucet first so the wallet has X1T before any
-# on-chain action; deploy (tc) is intentionally skipped because it costs
-# 100 X1T and the testnet faucet only drips a small amount per 24h.
+# on-chain action; tc (deploy) right after faucet because it requires a
+# fixed 100 X1T — running it before percent-based actions guarantees the
+# balance is high enough.
 _QUEST_PRIORITY = {
     "faucet": 0,
-    "swap": 1,
-    "transfer": 2,
-    "liquidity": 3,
+    "tc": 1,
+    "swap": 2,
+    "transfer": 3,
+    "liquidity": 4,
 }
 
 # Quest types we explicitly opt out of even if their handler exists.
-_QUEST_DISABLED = {"tc"}
+_QUEST_DISABLED: set[str] = set()
 
 
 def _quest_sort_key(quest: dict[str, Any]) -> int:
@@ -316,8 +319,6 @@ async def _h_liquidity(_q, chain, client, cfg, printer):
 
 
 async def _h_deploy(_q, chain, client, _cfg, printer):
-    # Disabled by _QUEST_DISABLED, but the handler stays here so a user can
-    # opt back in by removing "tc" from that set after funding the wallet.
     params = generate_token_params()
     oz_dir = Path("contracts/oz")
     if not oz_dir.exists():
@@ -340,7 +341,52 @@ async def _h_deploy(_q, chain, client, _cfg, printer):
     printer.success(
         f"deployed {params.symbol} ({params.name}) at {token_address} | {tx_hash}"
     )
+
+    # Constructor backend must know about the token before /quests will
+    # accept tc completion. This is a separate auth flow + POST.
+    try:
+        await _constructor_signin(chain, client, printer)
+        await client.save_contracts(
+            owner=chain.address, token_address=token_address, name=params.name
+        )
+        printer.success(f"registered {params.name} in constructor backend")
+    except APIError as e:
+        printer.error(f"constructor save_contracts failed: {e}")
+        return False
+
+    await delay(3)  # match vonssy timing — backend needs a beat to index
     return True
+
+
+async def _constructor_signin(chain: ChainContext, client: X1Client, printer: Printer) -> None:
+    """SIWE-style sign-in to api-constructor.x1ecochain.com.
+
+    Builds the message locally (no /signin GET); signs with the wallet key;
+    posts to /auth/verify; stores the returned bearer token on the client.
+    """
+    nonce = await client.auth_nonce(chain.address)
+    issued_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    message = (
+        f"constructor.x1ecochain.com wants you to sign in with your Ethereum account:\n"
+        f"{chain.address}\n\n"
+        f"Sign in to Token Constructor.\n\n"
+        f"URI: https://constructor.x1ecochain.com\n"
+        f"Version: 1\n"
+        f"Chain ID: {C.CHAIN_ID_DEFAULT}\n"
+        f"Nonce: {nonce}\n"
+        f"Issued At: {issued_at}"
+    )
+    encoded = encode_defunct(text=message)
+    signed = chain.account.sign_message(encoded)
+    sig = signed.signature.hex()
+    if not sig.startswith("0x"):
+        sig = "0x" + sig
+    resp = await client.auth_verify(signature=sig, message=message)
+    token = resp.get("token") if isinstance(resp, dict) else None
+    if not token:
+        raise APIError(f"constructor auth_verify returned no token: {resp!r}")
+    client.set_constructor_token(token)
+    printer.debug("constructor session authorized")
 
 
 _HANDLERS = {
