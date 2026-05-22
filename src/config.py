@@ -28,6 +28,7 @@ class Config:
     priority_fee_gwei: float
     proxy_url: Optional[str]
     proxy_map: dict[str, str]
+    proxy_map_file: Optional[Path]
     keystore_dir: Path
     transfer_pct: float
     swap_pct: float
@@ -81,7 +82,7 @@ def _load_proxy_map(path: Optional[Path]) -> dict[str, str]:
     if path is None:
         return {}
     if not path.exists():
-        raise ConfigError(f"PROXY_MAP_FILE points to {path}, but it doesn't exist")
+        return {}
     try:
         raw = json.loads(path.read_text())
     except json.JSONDecodeError as e:
@@ -127,8 +128,13 @@ def load_config(env_file: Optional[Path] = None) -> Config:
         raise ConfigError(f"GAS_PRIORITY_FEE_GWEI must be non-negative, got {priority_fee_gwei}")
 
     proxy_url = _validate_proxy(os.getenv("PROXY_URL") or None)
-    proxy_map_file = os.getenv("PROXY_MAP_FILE") or None
-    proxy_map = _load_proxy_map(Path(proxy_map_file) if proxy_map_file else None)
+    proxy_map_file_str = os.getenv("PROXY_MAP_FILE") or None
+    if proxy_map_file_str:
+        proxy_map_file = Path(proxy_map_file_str)
+    else:
+        default_map = Path(__file__).resolve().parent.parent / "proxies.json"
+        proxy_map_file = default_map if default_map.exists() else None
+    proxy_map = _load_proxy_map(proxy_map_file)
     keystore_dir = Path(os.getenv("KEYSTORE_DIR", C.KEYSTORE_DIR_DEFAULT))
 
     transfer_pct = _as_float("TRANSFER_PCT", os.getenv("TRANSFER_PCT", "2"))
@@ -150,6 +156,7 @@ def load_config(env_file: Optional[Path] = None) -> Config:
         priority_fee_gwei=priority_fee_gwei,
         proxy_url=proxy_url,
         proxy_map=proxy_map,
+        proxy_map_file=proxy_map_file,
         keystore_dir=keystore_dir,
         transfer_pct=transfer_pct,
         swap_pct=swap_pct,

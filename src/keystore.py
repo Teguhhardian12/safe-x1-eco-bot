@@ -12,6 +12,7 @@ import json
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
+from urllib.parse import quote
 
 from eth_account import Account
 
@@ -122,8 +123,17 @@ def prompt_password(prompt: str = "Keystore password: ", confirm: bool = False) 
     return pw
 
 
-def cli_create_keystore(keystore_dir: Path, printer: Printer) -> None:
-    """Interactive: prompt private key + password, write keystore."""
+def cli_create_keystore(
+    keystore_dir: Path,
+    printer: Printer,
+    proxy_map_file: Optional[Path] = None,
+) -> None:
+    """Interactive: prompt private key + password, write keystore.
+
+    After the keystore is written, optionally prompt for a proxy and
+    upsert it into the proxy map JSON. The path is taken from
+    `proxy_map_file` (PROXY_MAP_FILE env) or defaults to `<repo>/proxies.json`.
+    """
     pk = getpass.getpass("Private key (hex, with or without 0x): ").strip()
     if not pk:
         printer.error("Empty private key, aborting")
@@ -139,3 +149,76 @@ def cli_create_keystore(keystore_dir: Path, printer: Printer) -> None:
 
     addr = path.stem
     printer.success(f"Keystore created for {mask_address(addr)} at {path}")
+
+    _maybe_save_proxy(addr, proxy_map_file, printer)
+
+
+_VALID_PROXY_SCHEMES = ("http", "https", "socks5", "socks4")
+
+
+def _maybe_save_proxy(
+    address: str,
+    proxy_map_file: Optional[Path],
+    printer: Printer,
+) -> None:
+    """Prompt for proxy details and merge into the proxy map JSON.
+
+    Skipped silently if the user declines or leaves the host blank.
+    """
+    try:
+        ans = input("Add proxy for this wallet? [y/N]: ").strip().lower()
+    except EOFError:
+        return
+    if ans not in {"y", "yes"}:
+        return
+
+    try:
+        scheme = input(f"  scheme [{'/'.join(_VALID_PROXY_SCHEMES)}, default http]: ").strip().lower() or "http"
+        if scheme not in _VALID_PROXY_SCHEMES:
+            printer.error(f"unsupported scheme {scheme!r}, skipping proxy save")
+            return
+        host = input("  host: ").strip()
+        if not host:
+            printer.warn("empty host, skipping proxy save")
+            return
+        port = input("  port: ").strip()
+        if not port.isdigit() or not (0 < int(port) < 65536):
+            printer.error(f"port must be 1-65535, got {port!r}, skipping proxy save")
+            return
+        user = input("  username (blank for none): ").strip()
+        pw = getpass.getpass("  password (blank for none): ") if user else ""
+    except EOFError:
+        return
+
+    auth = ""
+    if user:
+        auth = f"{quote(user, safe='')}:{quote(pw, safe='')}@"
+    proxy_url = f"{scheme}://{auth}{host}:{port}"
+
+    target = proxy_map_file or _default_proxy_map_path()
+    try:
+        _upsert_proxy_map(target, address.lower(), proxy_url)
+    except (OSError, json.JSONDecodeError) as e:
+        printer.error(f"failed to save proxy to {target}: {e}")
+        return
+
+    printer.success(f"proxy saved for {mask_address(address)} in {target}")
+
+
+def _default_proxy_map_path() -> Path:
+    """Default proxies.json next to the repo root (parent of src/)."""
+    return Path(__file__).resolve().parent.parent / "proxies.json"
+
+
+def _upsert_proxy_map(path: Path, address_lower: str, proxy_url: str) -> None:
+    """Read-modify-write the JSON map; create if missing; chmod 0600."""
+    if path.exists():
+        raw = json.loads(path.read_text())
+        if not isinstance(raw, dict):
+            raise json.JSONDecodeError("proxy map must be a JSON object", path.read_text(), 0)
+    else:
+        raw = {}
+    raw[address_lower] = proxy_url
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(raw, indent=2) + "\n")
+    path.chmod(0o600)

@@ -17,6 +17,7 @@ keystores/
 *.keystore
 accounts.txt
 private_keys.txt
+proxies.json
 
 # Solidity build artifacts
 contracts/oz/

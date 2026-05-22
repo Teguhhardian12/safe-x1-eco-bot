@@ -511,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg = _override_keystore_dir(cfg, args.keystore_dir)
 
     if args.create_keystore:
-        cli_create_keystore(cfg.keystore_dir, printer)
+        cli_create_keystore(cfg.keystore_dir, printer, proxy_map_file=cfg.proxy_map_file)
         return 0
 
     try:
