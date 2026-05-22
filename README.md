@@ -2,7 +2,7 @@
 
 Safe rebuild of [vonssy/X1-Ecochain-BOT](https://github.com/vonssy/X1-Ecochain-BOT) for X1 testnet (Maculatus, chain ID 10778). Same on-chain feature set, hardened against the wallet-draining patterns in the original.
 
-**Status:** Phase 11 — live tested 2026-05-21. All 5 dispatchable quests pass on a single wallet (10 pts/cycle: faucet 1 + swap 2 + transfer 1 + liquidity 3 + tc 3).
+**Status:** Phase 13 — live tested 2026-05-21. All 5 dispatchable quests pass on a single wallet (10 pts/cycle: faucet 1 + swap 2 + transfer 1 + liquidity 3 + tc 3). Phase 13 adds auto-save of proxy details during `--create-keystore`.
 
 ## Project layout
 
@@ -55,10 +55,12 @@ cp .env.example .env  # endpoints + chain ID prefilled for X1 testnet
 
 ```bash
 python -m src.main --create-keystore
-# -> prompts for private key + password, writes keystores/<addr>.json (0600 perms)
+# 1. prompts for private key + password, writes keystores/<addr>.json (0600 perms)
+# 2. optionally prompts for proxy (scheme/host/port/user/pw) and writes
+#    the URL into proxies.json at the repo root (0600 perms)
 ```
 
-Repeat for every wallet you want to farm. Each one becomes a separate file in `keystores/`. The bot processes all of them in a single run.
+Repeat for every wallet you want to farm. Each one becomes a separate file in `keystores/`. The bot processes all of them in a single run, and auto-loads `proxies.json` from the repo root if present.
 
 ### Run
 
@@ -99,7 +101,7 @@ Each wallet uses an isolated `X1Client` instance — auth tokens, constructor se
 | `SWAP_PCT` | % of native balance per swap | `15` |
 | `ADD_LIQUIDITY_PCT` | % of native balance per add-liq | `15` |
 | `PROXY_URL` | optional outbound proxy (see below) | empty |
-| `PROXY_MAP_FILE` | optional per-wallet proxy mapping (see below) | empty |
+| `PROXY_MAP_FILE` | path to per-wallet proxy mapping; auto-detects `proxies.json` at repo root if unset | empty |
 
 ### Proxy
 
@@ -119,7 +121,7 @@ PROXY_URL=socks5://user:pass@host:port
 
 #### Per-wallet proxy
 
-For one IP per wallet (residential proxies, anti-detection), set `PROXY_MAP_FILE` in `.env` to a JSON file:
+For one IP per wallet (residential proxies, anti-detection), the bot reads a JSON map at `proxies.json` (repo root, auto-detected) or whatever `PROXY_MAP_FILE` in `.env` points to:
 
 ```json
 {
@@ -129,7 +131,9 @@ For one IP per wallet (residential proxies, anti-detection), set `PROXY_MAP_FILE
 }
 ```
 
-Resolution order per wallet: specific address entry → `"default"` key → `PROXY_URL` → no proxy. Address keys are matched case-insensitively. Empty string disables the proxy for that wallet.
+The fastest way to populate it is `--create-keystore` — answer `y` at the proxy prompt and the entry is upserted for you (credentials are URL-encoded). Manual edits work too.
+
+Resolution order per wallet: specific address entry → `"default"` key → `PROXY_URL` → no proxy. Address keys are matched case-insensitively. Empty string disables the proxy for that wallet. `proxies.json` is gitignored — it stores credentials in plaintext.
 
 One run, one prompt sequence — every wallet still iterates in the same loop, but each one opens its own `X1Client` with its own proxy. Run `--verbose` to see which proxy got picked per wallet (`proxy: per-wallet entry...` / `proxy: map default...`).
 
@@ -141,7 +145,7 @@ One run, one prompt sequence — every wallet still iterates in the same loop, b
 | `--no-loop` | run one pass through all keystores then exit |
 | `--dry-run` | log what would be dispatched, but don't sign or broadcast |
 | `--keystore-dir PATH` | override `KEYSTORE_DIR` from .env |
-| `--create-keystore` | interactive wallet import + encrypt, then exit |
+| `--create-keystore` | interactive wallet import + encrypt + optional proxy save, then exit |
 | `--env-file PATH` | path to a custom .env |
 
 ## Safety contracts
