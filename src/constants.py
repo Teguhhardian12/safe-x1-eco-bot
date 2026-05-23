@@ -73,7 +73,9 @@ EVM_VERSION = "paris"
 
 # Loop defaults
 DEFAULT_LOOP_INTERVAL = 3600
-DEFAULT_ACCOUNT_DELAY = 10
+DEFAULT_ACCOUNT_DELAY = 60
+DEFAULT_ACCOUNT_DELAY_JITTER = 120
+DEFAULT_INITIAL_STAGGER_MAX = 30
 
 # Per-quest delay so chain state (balance, allowance) settles between txs.
 # Random jitter avoids predictable timing patterns.

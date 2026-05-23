@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import random
 import secrets
 import sys
 from datetime import datetime, timezone
@@ -452,13 +453,28 @@ async def run_loop(cfg: Config, *, dry_run: bool, no_loop: bool, printer: Printe
     printer.info(f"{len(keystores)} keystore(s) found in {cfg.keystore_dir}")
 
     while True:
-        for ks in keystores:
+        order = list(keystores)
+        if cfg.shuffle_keystores:
+            random.shuffle(order)
+            printer.debug("shuffled keystore order for this pass")
+
+        if cfg.initial_stagger_max > 0:
+            stagger = random.uniform(0, cfg.initial_stagger_max)
+            printer.info(f"initial stagger: sleeping {stagger:.1f}s before first wallet")
+            await delay(stagger)
+
+        for idx, ks in enumerate(order):
             printer.info(f"--- {ks.name} ---")
             pw = _prompt_with_retries(ks, printer)
             if pw is None:
                 continue
             await run_account(ks, pw, cfg, dry_run=dry_run, printer=printer)
-            await delay(cfg.account_delay)
+            if idx < len(order) - 1:
+                base = cfg.account_delay
+                jitter = cfg.account_delay_jitter
+                wait = base + random.uniform(0, jitter) if jitter > 0 else base
+                printer.debug(f"inter-wallet delay: {wait:.1f}s (base={base}, jitter≤{jitter})")
+                await delay(wait)
 
         if no_loop:
             return

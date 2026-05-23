@@ -24,6 +24,9 @@ class Config:
     subgraph_url: str
     loop_interval: int
     account_delay: int
+    account_delay_jitter: int
+    initial_stagger_max: int
+    shuffle_keystores: bool
     slippage_bps: int
     priority_fee_gwei: float
     proxy_url: Optional[str]
@@ -115,6 +118,15 @@ def load_config(env_file: Optional[Path] = None) -> Config:
 
     loop_interval = _as_int("LOOP_INTERVAL_SECONDS", os.getenv("LOOP_INTERVAL_SECONDS", str(C.DEFAULT_LOOP_INTERVAL)))
     account_delay = _as_int("ACCOUNT_DELAY_SECONDS", os.getenv("ACCOUNT_DELAY_SECONDS", str(C.DEFAULT_ACCOUNT_DELAY)))
+    account_delay_jitter = _as_int(
+        "ACCOUNT_DELAY_JITTER_SECONDS",
+        os.getenv("ACCOUNT_DELAY_JITTER_SECONDS", str(C.DEFAULT_ACCOUNT_DELAY_JITTER)),
+    )
+    initial_stagger_max = _as_int(
+        "INITIAL_STAGGER_MAX_SECONDS",
+        os.getenv("INITIAL_STAGGER_MAX_SECONDS", str(C.DEFAULT_INITIAL_STAGGER_MAX)),
+    )
+    shuffle_keystores = (os.getenv("SHUFFLE_KEYSTORES", "true").lower() in ("1", "true", "yes", "on"))
     slippage_bps = _as_int("SLIPPAGE_BPS", os.getenv("SLIPPAGE_BPS", str(C.DEFAULT_SLIPPAGE_BPS)))
     priority_fee_gwei = _as_float("GAS_PRIORITY_FEE_GWEI", os.getenv("GAS_PRIORITY_FEE_GWEI", str(C.DEFAULT_PRIORITY_FEE_GWEI)))
 
@@ -124,6 +136,10 @@ def load_config(env_file: Optional[Path] = None) -> Config:
         raise ConfigError(f"LOOP_INTERVAL_SECONDS must be non-negative, got {loop_interval}")
     if account_delay < 0:
         raise ConfigError(f"ACCOUNT_DELAY_SECONDS must be non-negative, got {account_delay}")
+    if account_delay_jitter < 0:
+        raise ConfigError(f"ACCOUNT_DELAY_JITTER_SECONDS must be non-negative, got {account_delay_jitter}")
+    if initial_stagger_max < 0:
+        raise ConfigError(f"INITIAL_STAGGER_MAX_SECONDS must be non-negative, got {initial_stagger_max}")
     if priority_fee_gwei < 0:
         raise ConfigError(f"GAS_PRIORITY_FEE_GWEI must be non-negative, got {priority_fee_gwei}")
 
@@ -152,6 +168,9 @@ def load_config(env_file: Optional[Path] = None) -> Config:
         subgraph_url=subgraph_url,
         loop_interval=loop_interval,
         account_delay=account_delay,
+        account_delay_jitter=account_delay_jitter,
+        initial_stagger_max=initial_stagger_max,
+        shuffle_keystores=shuffle_keystores,
         slippage_bps=slippage_bps,
         priority_fee_gwei=priority_fee_gwei,
         proxy_url=proxy_url,
