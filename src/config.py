@@ -153,9 +153,9 @@ def load_config(env_file: Optional[Path] = None) -> Config:
     proxy_map = _load_proxy_map(proxy_map_file)
     keystore_dir = Path(os.getenv("KEYSTORE_DIR", C.KEYSTORE_DIR_DEFAULT))
 
-    transfer_pct = _as_float("TRANSFER_PCT", os.getenv("TRANSFER_PCT", "2"))
-    swap_pct = _as_float("SWAP_PCT", os.getenv("SWAP_PCT", "15"))
-    add_liquidity_pct = _as_float("ADD_LIQUIDITY_PCT", os.getenv("ADD_LIQUIDITY_PCT", "15"))
+    transfer_pct = _as_float("TRANSFER_PCT", os.getenv("TRANSFER_PCT", "1"))
+    swap_pct = _as_float("SWAP_PCT", os.getenv("SWAP_PCT", "5"))
+    add_liquidity_pct = _as_float("ADD_LIQUIDITY_PCT", os.getenv("ADD_LIQUIDITY_PCT", "5"))
 
     for name, val in (("TRANSFER_PCT", transfer_pct), ("SWAP_PCT", swap_pct), ("ADD_LIQUIDITY_PCT", add_liquidity_pct)):
         if not (0 < val < 100):

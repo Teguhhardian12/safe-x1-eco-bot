@@ -74,16 +74,41 @@ EVM_VERSION = "paris"
 # Loop defaults
 DEFAULT_LOOP_INTERVAL = 3600
 DEFAULT_ACCOUNT_DELAY = 60
-DEFAULT_ACCOUNT_DELAY_JITTER = 120
-DEFAULT_INITIAL_STAGGER_MAX = 30
+DEFAULT_ACCOUNT_DELAY_JITTER = 90
+DEFAULT_INITIAL_STAGGER_MAX = 15
 
 # Per-quest delay so chain state (balance, allowance) settles between txs.
 # Random jitter avoids predictable timing patterns.
-DEFAULT_QUEST_DELAY = 5.0
-DEFAULT_QUEST_JITTER = 3.0
+DEFAULT_QUEST_DELAY = 2.0
+DEFAULT_QUEST_JITTER = 1.0
 
 # Random token generation (for deploy)
-TOKEN_NAME_PREFIXES = ["Eco", "Crypto", "Mega", "Hyper", "Quantum", "Solar", "Cosmic"]
-TOKEN_NAME_SUFFIXES = ["Coin", "Token", "Cash", "Pay", "Swap", "Finance", "Network"]
+TOKEN_NAME_PREFIXES = [
+    "Eco", "Crypto", "Mega", "Hyper", "Quantum", "Solar", "Cosmic",
+    "Neo", "Alpha", "Beta", "Gamma", "Delta", "Omega", "Sigma",
+    "Astro", "Nova", "Luna", "Stellar", "Nebula", "Orbit",
+    "Apex", "Zenith", "Prime", "Ultra", "Turbo", "Blaze", "Flare",
+    "Volt", "Spark", "Bolt", "Thunder", "Storm", "Cyclone", "Vortex",
+    "Pixel", "Matrix", "Vector", "Nexus", "Vertex", "Pulse",
+    "Iron", "Steel", "Titan", "Titanium", "Platinum", "Diamond", "Crystal",
+    "Shadow", "Ghost", "Phantom", "Stealth", "Cipher", "Enigma",
+    "Arctic", "Frost", "Glacier", "Polar", "Tundra",
+    "Helio", "Radiant", "Luminous", "Aurora",
+    "Dragon", "Phoenix", "Griffin", "Hydra", "Kraken",
+    "Sonic", "Rapid", "Swift", "Flash", "Nitro",
+    "Jade", "Onyx", "Amber", "Sapphire", "Ruby",
+    "Meta", "DeFi", "Chain", "Block", "Hash",
+    "Atomic", "Fusion", "Plasma", "Photon", "Neutron",
+    "Wild", "Feral", "Savage", "Rogue", "Rebel",
+    "Royal", "Crown", "Imperial", "Sovereign", "Noble",
+    "Atlas", "Odyssey", "Genesis", "Horizon",
+]
+TOKEN_NAME_SUFFIXES = [
+    "Coin", "Token", "Cash", "Pay", "Swap", "Finance", "Network",
+    "Chain", "Link", "Hub", "DAO", "Verse",
+    "Block", "Ledger", "Node", "Pool", "Vault",
+    "Core", "Lab", "X", "Plus", "Pro",
+    "Fund", "Yield", "Stake", "AI", "Agents",
+]
 TOKEN_PREMINT_MIN = 1_000_000
 TOKEN_PREMINT_MAX = 100_000_000
