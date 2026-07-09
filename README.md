@@ -72,7 +72,7 @@ python -m src.main --no-loop --dry-run --verbose
 python -m src.main --no-loop --verbose
 ```
 
-You'll be prompted for each keystore's password once at the start of its turn (3 retries on wrong password). Quests run in this priority: faucet → tc → swap → transfer → liquidity.
+You'll be prompted for each keystore's password once at the start of its turn (3 retries on wrong password). To enter the password a single time for the whole run, set `PASSWORD_ONCE=true` in `.env` — the bot verifies it against the first keystore, then reuses it for every wallet (wallets with a different password are skipped). Quests run in this priority: faucet → tc → swap → transfer → liquidity.
 
 ## Multi-wallet
 
@@ -81,6 +81,8 @@ One run iterates every `keystores/*.json` file sequentially:
 1. Prompt password for wallet 1 → sign in → run 5 quests → +10 pts
 2. Sleep `ACCOUNT_DELAY_SECONDS` (default 10s, set in `.env`)
 3. Prompt password for wallet 2 → ... and so on
+
+With `PASSWORD_ONCE=true`, step 1 prompts once at the very start and the same password is reused for all wallets — no per-wallet prompts mid-run. Requires every keystore to share that password; a wallet that doesn't unlock is skipped with a warning.
 
 Each wallet uses an isolated `X1Client` instance — auth tokens, constructor sessions, and nonces don't bleed across wallets. There's no global lock, just a per-account stagger delay.
 
@@ -102,6 +104,7 @@ Each wallet uses an isolated `X1Client` instance — auth tokens, constructor se
 | `ADD_LIQUIDITY_PCT` | % of native balance per add-liq | `15` |
 | `PROXY_URL` | optional outbound proxy (see below) | empty |
 | `PROXY_MAP_FILE` | path to per-wallet proxy mapping; auto-detects `proxies.json` at repo root if unset | empty |
+| `PASSWORD_ONCE` | prompt password once, reuse for all wallets (same password required) | `false` |
 
 ### Proxy
 

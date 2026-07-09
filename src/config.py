@@ -36,6 +36,7 @@ class Config:
     transfer_pct: float
     swap_pct: float
     add_liquidity_pct: float
+    password_once: bool
 
 
 def _required(key: str, value: Optional[str]) -> str:
@@ -161,6 +162,8 @@ def load_config(env_file: Optional[Path] = None) -> Config:
         if not (0 < val < 100):
             raise ConfigError(f"{name} must be in (0, 100), got {val}")
 
+    password_once = (os.getenv("PASSWORD_ONCE", "false").lower() in ("1", "true", "yes", "on"))
+
     return Config(
         rpc_url=rpc_url,
         chain_id=chain_id,
@@ -180,4 +183,5 @@ def load_config(env_file: Optional[Path] = None) -> Config:
         transfer_pct=transfer_pct,
         swap_pct=swap_pct,
         add_liquidity_pct=add_liquidity_pct,
+        password_once=password_once,
     )

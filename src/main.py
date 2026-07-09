@@ -452,6 +452,13 @@ async def run_loop(cfg: Config, *, dry_run: bool, no_loop: bool, printer: Printe
 
     printer.info(f"{len(keystores)} keystore(s) found in {cfg.keystore_dir}")
 
+    shared_password: Optional[str] = None
+    if cfg.password_once:
+        shared_password = _prompt_once(keystores, printer)
+        if shared_password is None:
+            printer.error("password input failed — aborting")
+            return
+
     while True:
         order = list(keystores)
         if cfg.shuffle_keystores:
@@ -465,9 +472,17 @@ async def run_loop(cfg: Config, *, dry_run: bool, no_loop: bool, printer: Printe
 
         for idx, ks in enumerate(order):
             printer.info(f"--- {ks.name} ---")
-            pw = _prompt_with_retries(ks, printer)
-            if pw is None:
-                continue
+            if shared_password is not None:
+                try:
+                    with unlock(ks, shared_password) as _:
+                        pw: Optional[str] = shared_password
+                except KeystoreError as e:
+                    printer.error(f"skipping {ks.name}: {e} (password-once mismatch)")
+                    continue
+            else:
+                pw = _prompt_with_retries(ks, printer)
+                if pw is None:
+                    continue
             await run_account(ks, pw, cfg, dry_run=dry_run, printer=printer)
             if idx < len(order) - 1:
                 base = cfg.account_delay
@@ -480,6 +495,35 @@ async def run_loop(cfg: Config, *, dry_run: bool, no_loop: bool, printer: Printe
             return
         printer.info(f"sleeping {cfg.loop_interval}s before next pass")
         await delay(cfg.loop_interval)
+
+
+def _prompt_once(keystores: list[Path], printer: Printer) -> Optional[str]:
+    """Prompt for the password once, verifying against the first keystore.
+
+    Returns the password if it unlocks the first keystore (retrying up to 3x
+    on a typo), else None. The returned password is then reused for every
+    wallet in password-once mode; wallets with a different password are skipped.
+    """
+    if not keystores:
+        return None
+    probe = keystores[0]
+    for attempt in range(3):
+        try:
+            pw = prompt_password("Keystore password (used for all wallets): ")
+        except (KeystoreError, EOFError) as e:
+            printer.error(f"password input failed: {e}")
+            return None
+        try:
+            with unlock(probe, pw) as _:
+                printer.info("password verified against first keystore")
+                return pw
+        except KeystoreError as e:
+            if "Wrong password" in str(e) and attempt < 2:
+                printer.warn(f"wrong password, retry {attempt + 1}/3")
+                continue
+            printer.error(f"giving up on password prompt: {e}")
+            return None
+    return None
 
 
 def _prompt_with_retries(ks: Path, printer: Printer) -> Optional[str]:
